@@ -6,8 +6,9 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Tymon\JWTAuth\Contracts\JWTSubject;
 
-class User extends Authenticatable
+class User extends Authenticatable implements JWTSubject
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
     use HasFactory, Notifiable;
@@ -19,8 +20,11 @@ class User extends Authenticatable
      */
     protected $fillable = [
         'name',
+        'last_name',
+        'phone',
         'email',
         'password',
+        'role',
     ];
 
     /**
@@ -45,4 +49,37 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+    // Identificador del usuario en el token (usualmente el ID)
+    public function getJWTIdentifier()
+    {
+        return $this->getKey();
+    }
+
+    // Claims personalizados (datos extra en el token)
+    public function getJWTCustomClaims()
+    {
+        return [
+            'role' => $this->role, // Muy útil para validar roles en el frontend sin consultar la BD
+        ];
+    }
+
+    // --- Relaciones ---
+
+    public function addresses()
+    {
+        return $this->hasMany(Address::class);
+    }
+
+    public function orders()
+    {
+        return $this->hasMany(Order::class);
+    }
+
+    // Helper para verificar si es admin
+    public function isAdmin()
+    {
+        return $this->role === 'admin';
+    }
+
 }
