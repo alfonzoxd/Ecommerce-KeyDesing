@@ -2,93 +2,78 @@
 
 namespace App\Http\Controllers;
 
-use Illuminate\Http\Request;
+use App\Http\Requests\Auth\LoginRequest;
+use App\Http\Requests\Auth\RegisterRequest;
+use App\Http\Resources\UserResource;
+use App\Models\User;
+use App\Traits\ResponseTrait;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
-use App\Models\User;
-use Illuminate\Support\Facades\Validator;
 
 class AuthController extends Controller
 {
-    /**
-     * Registro de nuevos clientes.
-     * (Los admins se crean manualmente en BD o con un seeder por seguridad)
-     */
-    public function register(Request $request)
+    use ResponseTrait;
+
+    public function register(RegisterRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:255',
-            'last_name' => 'required|string|max:255',
-            'email' => 'required|string|email|max:255|unique:users',
-            'password' => 'required|string|min:6|confirmed', // requiere campo password_confirmation
-            'phone' => 'nullable|string|max:20',
-        ]);
+        // 1. Validación: Ya se hizo automáticamente en RegisterRequest.
+        // Si falla, Laravel devuelve error 422 automáticamente.
 
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
-
+        // 2. Crear Usuario
         $user = User::create([
             'name' => $request->name,
             'last_name' => $request->last_name,
             'email' => $request->email,
             'password' => Hash::make($request->password),
             'phone' => $request->phone,
-            'role' => 'client', // Forzamos que sea cliente
+            'role' => 'client',
         ]);
 
-        // Generamos el token inmediatamente para que quede logueado
+        // 3. Generar Token
         $token = Auth::guard('api')->login($user);
 
-        return response()->json([
-            'message' => 'Usuario registrado exitosamente',
-            'user' => $user,
+        // 4. Responder usando el Trait y el Resource
+        $data = [
+            'user' => new UserResource($user), // Transformamos el usuario
             'token' => $token,
-            'role' => $user->role // Importante para el frontend
-        ], 201);
+            'token_type' => 'bearer',
+        ];
+
+        return $this->responseJson($data, 201); // Usamos método del Trait
     }
 
-    /**
-     * Login para todos (Admins y Clientes).
-     * El Frontend decidirá a dónde redirigir basado en el 'role' que devolvemos.
-     */
-    public function login(Request $request)
+    public function login(LoginRequest $request)
     {
         $credentials = $request->only('email', 'password');
 
         if (!$token = Auth::guard('api')->attempt($credentials)) {
-            return response()->json(['error' => 'Credenciales inválidas'], 401);
+            // Usamos el método de error del Trait
+            return $this->responseErrorJson('Credenciales inválidas', [], 401);
         }
 
         $user = Auth::guard('api')->user();
 
-        return response()->json([
+        // Estructura limpia de respuesta
+        $data = [
+            'user' => new UserResource($user),
             'access_token' => $token,
             'token_type' => 'bearer',
             'expires_in' => auth('api')->factory()->getTTL() * 60,
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'email' => $user->email,
-                'role' => $user->role // <--- El frontend usará esto para redirigir
-            ]
-        ]);
+        ];
+
+        return $this->responseJson($data);
     }
 
-    /**
-     * Obtener datos del usuario autenticado (Perfil).
-     */
     public function me()
     {
-        return response()->json(Auth::guard('api')->user());
+        $user = Auth::guard('api')->user();
+        // Usamos el Resource para no devolver datos basura
+        return $this->responseJson(new UserResource($user));
     }
 
-    /**
-     * Cerrar sesión (Invalidar token).
-     */
     public function logout()
     {
         Auth::guard('api')->logout();
-        return response()->json(['message' => 'Sesión cerrada exitosamente']);
+        return $this->responseJsonMessageOk('Sesión cerrada exitosamente');
     }
 }

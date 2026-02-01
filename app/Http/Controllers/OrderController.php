@@ -2,52 +2,41 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Order\StoreOrderRequest;
+use App\Http\Requests\Order\UpdateOrderStatusRequest;
+use App\Http\Resources\OrderResource;
 use App\Models\Order;
-use App\Models\OrderDetail;
 use App\Models\Product;
-use Illuminate\Http\Request;
+use App\Traits\ResponseTrait;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Validator;
-
-// Librerías de Mercado Pago
 use MercadoPago\MercadoPagoConfig;
 use MercadoPago\Client\Preference\PreferenceClient;
 use MercadoPago\Exceptions\MPApiException;
 
 class OrderController extends Controller
 {
+    use ResponseTrait;
+
     public function __construct()
     {
-        // Configuramos el SDK con tu Token del .env
         MercadoPagoConfig::setAccessToken(env('MP_ACCESS_TOKEN'));
     }
 
-    public function store(Request $request)
+    public function store(StoreOrderRequest $request)
     {
-        // 1. Validar datos de entrada
-        $validator = Validator::make($request->all(), [
-            'address_id' => 'required|exists:addresses,id',
-            'items' => 'required|array|min:1',
-            'items.*.product_id' => 'required|exists:products,id',
-            'items.*.quantity' => 'required|integer|min:1',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
 
         try {
-            DB::beginTransaction(); // Iniciamos transacción
+            DB::beginTransaction();
 
             $user = Auth::user();
             $total = 0;
             $orderItems = [];
             $preferenceItems = [];
 
-            // 2. Procesar cada producto
+            // Procesar productos
             foreach ($request->items as $item) {
-                // Bloqueo pesimista para evitar errores de stock concurrente
+                // Bloqueo para evitar condiciones de carrera en el stock
                 $product = Product::lockForUpdate()->find($item['product_id']);
 
                 if ($product->stock < $item['quantity']) {
@@ -70,14 +59,13 @@ class OrderController extends Controller
                     "title" => $product->name,
                     "quantity" => (int)$item['quantity'],
                     "unit_price" => (float)$product->price,
-                    "currency_id" => "PEN" // Cambia a MXN o USD si es necesario
+                    "currency_id" => "PEN"
                 ];
 
-                // Restar stock
                 $product->decrement('stock', $item['quantity']);
             }
 
-            // 3. Crear Orden Local
+            // Crear Orden Local
             $order = Order::create([
                 'user_id' => $user->id,
                 'address_id' => $request->address_id,
@@ -87,16 +75,13 @@ class OrderController extends Controller
                 'shipping_cost' => 10.00,
             ]);
 
-            // Guardar detalles
             foreach ($orderItems as $item) {
                 $order->details()->create($item);
             }
 
-            // 4. Conectar con Mercado Pago
+            // Conectar con Mercado Pago
             $client = new PreferenceClient();
 
-            // --- AQUÍ ESTABA EL ERROR COMÚN (LAS LLAVES) ---
-            // Asegúrate que back_urls esté al mismo nivel que "items" y "payer"
             $preference = $client->create([
                 "items" => $preferenceItems,
                 "payer" => [
@@ -104,21 +89,20 @@ class OrderController extends Controller
                     "surname" => $user->last_name ?? 'Cliente',
                     "email" => $user->email,
                 ],
-                // NOTA: back_urls debe estar FUERA del array de payer
                 "back_urls" => [
-                    "success" => "https://www.google.com/search?q=success",
-                    "failure" => "https://www.google.com/search?q=failure",
-                    "pending" => "https://www.google.com/search?q=pending"
+                    "success" => "http://127.0.0.1:8000/api/payment/success",
+                    "failure" => "http://127.0.0.1:8000/api/payment/failure",
+                    "pending" => "http://127.0.0.1:8000/api/payment/pending"
                 ],
-                //"auto_return" => "approved",
+                // "auto_return" => "approved", // Desactivado temporalmente según tus pruebas
                 "external_reference" => (string)$order->id,
                 "statement_descriptor" => "TIENDA TECLADOS"
             ]);
 
             DB::commit();
 
-            // 5. Retornar respuesta
-            return response()->json([
+            // Usamos ResponseTrait para devolver éxito
+            return $this->responseJson([
                 'message' => 'Orden creada. Redirige al usuario a init_point.',
                 'order_id' => $order->id,
                 'payment_url' => $preference->init_point,
@@ -127,15 +111,66 @@ class OrderController extends Controller
 
         } catch (MPApiException $e) {
             DB::rollBack();
-            // Capturamos el detalle exacto del error de MP
-            return response()->json([
-                'error' => 'Error de Mercado Pago',
-                'details' => $e->getApiResponse()->getContent()
-            ], 500);
+            // Error de MP formateado
+            return $this->responseErrorJson(
+                'Error de Mercado Pago',
+                $e->getApiResponse()->getContent(),
+                500
+            );
 
         } catch (\Exception $e) {
             DB::rollBack();
-            return response()->json(['error' => $e->getMessage()], 500);
+            return $this->responseErrorJson($e->getMessage(), [], 500);
         }
+    }
+
+    /**
+     * CLIENTE: Ver "Mis Compras"
+     */
+    public function myOrders()
+    {
+        $user = Auth::user();
+
+        $orders = Order::where('user_id', $user->id)
+                       ->with(['details.product', 'address'])
+                       ->orderBy('created_at', 'desc')
+                       ->get();
+
+        // Transformamos la colección usando el Resource
+        return $this->responseJson(OrderResource::collection($orders));
+    }
+
+    /**
+     * ADMIN: Ver "Todas las Ventas"
+     */
+    public function index()
+    {
+        $orders = Order::with(['user', 'details', 'address'])
+                       ->orderBy('created_at', 'desc')
+                       ->paginate(10);
+
+        // Resource::collection funciona perfecto con paginación automática
+        return $this->responseJson(OrderResource::collection($orders));
+    }
+
+    /**
+     * ADMIN: Cambiar estado de la orden
+     */
+    public function updateStatus(UpdateOrderStatusRequest $request, $id)
+    {
+        $order = Order::find($id);
+
+        if (!$order) {
+            return $this->responseErrorJson('Orden no encontrada', [], 404);
+        }
+
+        $oldStatus = $order->status;
+        $order->status = $request->status;
+        $order->save();
+
+        return $this->responseJson([
+            'message' => "Estado actualizado de $oldStatus a {$order->status}",
+            'order' => new OrderResource($order)
+        ]);
     }
 }

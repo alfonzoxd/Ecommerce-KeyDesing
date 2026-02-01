@@ -2,105 +2,100 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Category\StoreCategoryRequest;
+use App\Http\Requests\Category\UpdateCategoryRequest;
+use App\Http\Resources\CategoryResource;
 use App\Models\Category;
-use Illuminate\Http\Request;
+use App\Traits\ResponseTrait; // Tu Trait
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Validator;
 
 class CategoryController extends Controller
 {
+    use ResponseTrait; // Activamos el Trait
+
     /**
      * PÚBLICO: Listar todas las categorías.
      */
     public function index()
     {
-        // Solo traemos id, nombre y slug. No necesitamos timestamps.
-        $categories = Category::select('id', 'name', 'slug')->get();
-        return response()->json($categories);
+        $categories = Category::all();
+
+        // Usamos el Resource::collection para transformar una lista
+        return $this->responseJson(CategoryResource::collection($categories));
     }
 
     /**
      * ADMIN: Crear nueva categoría.
+     * Inyectamos StoreCategoryRequest para validar automáticamente
      */
-    public function store(Request $request)
+    public function store(StoreCategoryRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:50|unique:categories,name',
-        ]);
+        // Si llega aquí, ya pasó la validación (letras, max 20, unique)
 
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
-
-        // Crear la categoría con Slug automático
         $category = Category::create([
             'name' => $request->name,
             'slug' => Str::slug($request->name)
         ]);
 
-        return response()->json([
-            'message' => 'Categoría creada exitosamente',
-            'category' => $category
-        ], 201);
+        return $this->responseJsonMessageOk(
+            'Categoría creada exitosamente',
+            new CategoryResource($category), // Devolvemos el objeto transformado
+            201
+        );
+        // Nota: Si tu Trait no soporta data en responseJsonMessageOk, usa responseJson:
+        // return $this->responseJson(['message' => 'Creado', 'category' => new CategoryResource($category)], 201);
     }
 
     /**
-     * PÚBLICO: Ver una categoría específica (por ID).
+     * PÚBLICO: Ver una categoría específica.
      */
     public function show($id)
     {
         $category = Category::find($id);
 
         if (!$category) {
-            return response()->json(['error' => 'Categoría no encontrada'], 404);
+            return $this->responseErrorJson('Categoría no encontrada', [], 404);
         }
 
-        return response()->json($category);
+        return $this->responseJson(new CategoryResource($category));
     }
 
     /**
      * ADMIN: Actualizar categoría.
      */
-    public function update(Request $request, $id)
+    public function update(UpdateCategoryRequest $request, $id)
     {
         $category = Category::find($id);
 
         if (!$category) {
-            return response()->json(['error' => 'Categoría no encontrada'], 404);
+            return $this->responseErrorJson('Categoría no encontrada', [], 404);
         }
 
-        $validator = Validator::make($request->all(), [
-            'name' => 'required|string|max:50|unique:categories,name,' . $id,
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
-
+        // Si el nombre cambió, actualizamos el slug también
         $category->update([
             'name' => $request->name,
-            'slug' => Str::slug($request->name) // Actualizamos el slug si cambia el nombre
+            'slug' => Str::slug($request->name)
         ]);
 
-        return response()->json([
+        return $this->responseJson([
             'message' => 'Categoría actualizada',
-            'category' => $category
+            'category' => new CategoryResource($category)
         ]);
     }
 
     /**
-     * ADMIN: Eliminar categoría (Soft Delete).
+     * ADMIN: Eliminar categoría.
      */
     public function destroy($id)
     {
         $category = Category::find($id);
 
         if (!$category) {
-            return response()->json(['error' => 'Categoría no encontrada'], 404);
+            return $this->responseErrorJson('Categoría no encontrada', [], 404);
         }
 
-        $category->delete(); // Esto solo marca 'deleted_at', no borra el registro físico
+        $category->delete();
 
-        return response()->json(['message' => 'Categoría eliminada correctamente']);
+        return $this->responseJsonMessageOk('Categoría eliminada correctamente');
     }
 }

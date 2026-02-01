@@ -2,29 +2,35 @@
 
 namespace App\Http\Controllers;
 
+use App\Http\Requests\Product\StoreProductRequest;
+use App\Http\Requests\Product\UpdateProductRequest;
+use App\Http\Resources\ProductResource;
 use App\Models\Product;
+use App\Traits\ResponseTrait;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
+    use ResponseTrait;
+
     /**
      * PÚBLICO: Listar productos con paginación.
-     * Soporta filtro por subcategoría: ?subcategory_id=1
      */
     public function index(Request $request)
     {
-        $query = Product::with('subcategory.category'); // Traemos datos del padre y abuelo
+        // Iniciamos la consulta cargando relaciones para optimizar (Eager Loading)
+        $query = Product::with('subcategory.category');
 
-        // Filtro opcional
+        // Filtro opcional por subcategoría
         if ($request->has('subcategory_id')) {
             $query->where('subcategory_id', $request->query('subcategory_id'));
         }
 
-        // Paginamos de 10 en 10
         $products = $query->paginate(10);
 
-        return response()->json($products);
+        // Devolvemos la colección transformada.
+        // ProductResource::collection maneja la paginación de Laravel automáticamente.
+        return $this->responseJson(ProductResource::collection($products));
     }
 
     /**
@@ -32,92 +38,66 @@ class ProductController extends Controller
      */
     public function show($id)
     {
-        // Buscamos producto y cargamos sus relaciones (incluyendo imágenes si hubiera)
-        $product = Product::with(['subcategory', 'images'])->find($id);
+        // Buscamos y cargamos relaciones
+        $product = Product::with(['subcategory.category', 'images'])->find($id);
 
         if (!$product) {
-            return response()->json(['error' => 'Producto no encontrado'], 404);
+            return $this->responseErrorJson('Producto no encontrado', [], 404);
         }
 
-        return response()->json($product);
+        // Devolvemos un solo recurso
+        return $this->responseJson(new ProductResource($product));
     }
 
     /**
      * ADMIN: Crear producto.
      */
-    public function store(Request $request)
+    public function store(StoreProductRequest $request)
     {
-        $validator = Validator::make($request->all(), [
-            'subcategory_id' => 'required|exists:subcategories,id',
-            'name' => 'required|string|max:255',
-            'description' => 'nullable|string',
-            'price' => 'required|numeric|min:0',
-            'stock' => 'required|integer|min:0',
-            'image_url' => 'nullable|string', // Por ahora URL texto, luego veremos subida de archivos
-
-            // Validamos que sean arrays (para el JSON)
-            'features' => 'nullable|array',
-            'specifications' => 'nullable|array',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
+        // La validación ya pasó en StoreProductRequest
 
         $product = Product::create($request->all());
 
-        return response()->json([
-            'message' => 'Producto creado exitosamente',
-            'product' => $product
-        ], 201);
+        return $this->responseJsonMessageOk(
+            'Producto creado exitosamente',
+            new ProductResource($product),
+            201
+        );
     }
 
     /**
      * ADMIN: Actualizar producto.
      */
-    public function update(Request $request, $id)
+    public function update(UpdateProductRequest $request, $id)
     {
         $product = Product::find($id);
 
         if (!$product) {
-            return response()->json(['error' => 'Producto no encontrado'], 404);
+            return $this->responseErrorJson('Producto no encontrado', [], 404);
         }
 
-        // Validamos solo lo que se envía (sometimes)
-        $validator = Validator::make($request->all(), [
-            'subcategory_id' => 'exists:subcategories,id',
-            'name' => 'string|max:255',
-            'price' => 'numeric|min:0',
-            'stock' => 'integer|min:0',
-            'features' => 'array',
-            'specifications' => 'array',
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 400);
-        }
-
+        // Actualizamos con los datos validados
         $product->update($request->all());
 
-        return response()->json([
+        return $this->responseJson([
             'message' => 'Producto actualizado',
-            'product' => $product
+            'product' => new ProductResource($product)
         ]);
     }
 
     /**
-     * ADMIN: Eliminar producto (Soft Delete).
+     * ADMIN: Eliminar producto.
      */
     public function destroy($id)
     {
         $product = Product::find($id);
 
         if (!$product) {
-            return response()->json(['error' => 'Producto no encontrado'], 404);
+            return $this->responseErrorJson('Producto no encontrado', [], 404);
         }
 
         $product->delete();
 
-        return response()->json(['message' => 'Producto eliminado correctamente']);
+        return $this->responseJsonMessageOk('Producto eliminado correctamente');
     }
 }

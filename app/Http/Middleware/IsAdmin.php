@@ -4,11 +4,12 @@ namespace App\Http\Middleware;
 
 use Closure;
 use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
-use Illuminate\Support\Facades\Auth;
+use App\Traits\ResponseTrait;
 
 class IsAdmin
 {
+    use ResponseTrait;
+
     public function handle(Request $request, Closure $next)
     {
         // Verificamos si hay usuario logueado Y si su rol es 'admin'
@@ -16,9 +17,11 @@ class IsAdmin
             return $next($request);
         }
 
-        // Si no es admin, bloqueamos el paso y devolvemos Error 403 (Prohibido)
-        return response()->json([
-            'error' => 'No autorizado. Se requieren privilegios de administrador.'
-        ], 403);
+        // Usamos el Trait para devolver el error con el mismo formato que el resto de la API
+        return $this->responseErrorJson(
+            'No autorizado. Se requieren privilegios de administrador.',
+            [], // Data vacía
+            403 // Código HTTP Forbidden
+        );
     }
 }
